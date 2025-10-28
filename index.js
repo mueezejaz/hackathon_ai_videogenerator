@@ -3,8 +3,10 @@ import path from "path";
 import { fileURLToPath } from "url";
 import queue from "./Queueconnection/Queue.connection.js";
 import redis from "./database/radis.connect.js"
+import cors from "cors";
 
 const app = express();
+app.use(cors());
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
@@ -14,9 +16,16 @@ app.use(express.json());
 
 app.use(express.static(path.join(__dirname, './client/dist')))
 
+app.post("/createvideo", (req, res) => {
+  console.log(req.body)
+  res.json({
+    message: "done",
+  })
+
+})
 app.get("/test", async (req, res) => {
   (async () => {
-    const job = queue.createJob({ foo: 'bar' });
+    const job = queue.createJob({ foo: 'this is working' });
     await job.save();
     console.log('Job added:', job.id);
 
