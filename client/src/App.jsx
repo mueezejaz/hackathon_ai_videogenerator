@@ -30,7 +30,7 @@ function App() {
         placeholder="Enter data"
       />
       <button onClick={handleSubmit}>Send</button>
-      <h1>hello world</h1>
+      <h1 className='text-orange-900 text-9xl'>hello world</h1>
     </div>
   )
 }

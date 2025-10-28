@@ -1,5 +1,6 @@
 import { queueName, queue, connection } from '../Queueconnection/Queue.connection.js';
 import path from 'path';
+import cloudinary from '../database/claud.connect.js';
 import https from 'https'
 import { execSync } from "child_process";
 import ffprobe from "ffprobe-static";
@@ -21,7 +22,7 @@ const model = new ChatGoogleGenerativeAI({
   temperature: 0.7,
 });
 
-async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
+async function updateUser(userid, nmessage, isprocessing, isdone, iserror, video_uri) {
   userid = String(userid);
   const existingData = await redis.get(userid);
   if (!existingData) {
@@ -36,6 +37,9 @@ async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
     isdone: isdone ?? existingData.isdone,
     iserror: iserror ?? existingData.iserror,
   };
+  if (video_uri) {
+    newData.video_uri = video_uri;
+  }
   await redis.set(userid, newData);
   console.log("user updated");
 }
@@ -71,6 +75,18 @@ function logError(userId, attempt, error, code = null) {
   fs.writeFileSync(logFile, JSON.stringify(logs, null, 2));
 
   console.log(`error logged to ${logFile}`);
+}
+
+async function uploadvideotoclaudinary(address) {
+  try {
+    const uploadResult = await cloudinary.uploader.upload(address, {
+      resource_type: "video",
+      folder: "hackathon_videos" // optional folder in Cloudinary
+    });
+    return uploadResult.secure_url;
+  } catch (error) {
+    console.log("error in uploading video to caludinary", error);
+  }
 }
 
 function logSuccess(userId, attempt, finalCode) {
@@ -639,11 +655,15 @@ Ensure the visuals match each narration line precisely and use only Manim's inte
 
     console.log("\nvideo generation completed successfully!");
     console.log("check the logs folder for detailed error/success logs.");
-
+    let videoPath = `${baseDir}/final/final_video.mp4`;
+    console.log("\n start uploading video to claude")
+    let video_uri = await uploadvideotoclaudinary(videoPath)
+    console.log("\n video is uploaded to claude", video_uri);
     return {
       success: true,
       videoPath: `${baseDir}/final/final_video.mp4`,
-      baseDir: baseDir
+      baseDir: baseDir,
+      video_uri,
     };
 
   } catch (error) {
@@ -656,6 +676,7 @@ Ensure the visuals match each narration line precisely and use only Manim's inte
 const worker = new Worker(
   queueName,
   async (job) => {
+    await job.extendLock(1800000);
     const { userId, userinput } = job.data;
     console.log(`sstarting video generation for user ${userId}: "${userinput}"`);
 
@@ -667,7 +688,7 @@ const worker = new Worker(
       const result = await generateVideo(userId, userinput);
 
       // update status to done
-      await updateUser(userId, "video generation completed!", false, true, false);
+      await updateUser(userId, "video generation completed!", false, true, false, result.video_uri);
 
       console.log(`job completed for user ${userId}`);
       return result;
