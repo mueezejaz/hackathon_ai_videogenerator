@@ -1,7 +1,7 @@
 import { queueName, queue, connection } from '../Queueconnection/Queue.connection.js';
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { Queue, Worker } from "bullmq";
+import { Queue, tryCatch, Worker } from "bullmq";
 import redis from '../database/radis.connect.js';
 import { config } from '../config/env.js';
 
@@ -31,15 +31,106 @@ async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
   };
 
   await redis.set(userid, newData);
+  console.log("user updated");
 }
 
 const worker = new Worker(
   queueName,
   async (job) => {
+    // step 1 generate initial script
+    console.log("generating inital script")
     await updateUser(job.data.userid, "waiting for ai to write script for the video", true, false, false);
-    let output = await model.invoke(job.data.userinput);
-    console.log(output);
-    console.log("✅ Job done:", job.id);
+    const scriptPrompt = [
+      new SystemMessage(
+        `You are an AI that generates detailed narration scripts and perfectly matching scene descriptions 
+for educational videos created entirely using the Manim Python library.
+
+===============================
+CRITICAL OUTPUT RULES
+===============================
+- Output **only valid JSON** (no markdown, no code fences, no comments).
+- Format:
+{
+  "script": ["line 1", "line 2", ...],
+  "visuals": ["scene 1 explanation", "scene 2 explanation", ...]
+}
+- The "script" and "visuals" arrays must be the same length.
+- Each "script" item = one narration line.
+- Each "visuals" item = one self-contained Manim scene that visually matches that narration.
+
+===============================
+CONTENT RULES
+===============================
+1. Narration:
+   - Short (1–3 sentences each), educational, and clear.
+   - Explain the topic step-by-step: introduction, explanation, process, components, and impact/conclusion.
+   - Use a natural, documentary-style tone (not robotic or overly complex).
+
+2. Visuals:
+   - Use **only Manim’s built-in classes and functions** — no external assets, images, or extra imports.
+   - Allowed objects:
+     - Shapes: Circle, Square, Rectangle, Line, Arrow, Dot, Polygon, Ellipse
+     - Text and MathText
+     - Grouping and layouts: VGroup, arrange_in_grid, arrange_in_circle, etc.
+   - Allowed animations:
+     - Create, Write, FadeIn, FadeOut, Transform, MoveTo, Rotate, Scale, Wiggle, Shift
+   - Use clear, renderable visual metaphors:
+     - Network/Connections → circles connected by lines or arrows
+     - Data flow → moving dots or arrows
+     - Computers/Servers → rectangles (with inner lines for screens)
+     - Energy/Flow → glowing dots or lines moving
+     - Growth/Change → scaling or color transition
+     - Math/Graphs → coordinate axes, plotted dots, or functions
+   - Describe:
+     - Number, type, and arrangement of objects
+     - Basic colors (blue, green, yellow, red, white, gray)
+     - Motions, animations, and transitions between scenes
+   - Each scene must be **self-contained and renderable** on its own.
+
+===============================
+VISUAL STRUCTURE SUGGESTION
+===============================
+- Scene 1: Introduction or definition
+- Scene 5+: Explanation of key parts or process
+- Scene 5+: Examples, data flow, or visualization of impact
+- Final Scene: Summary or conclusion
+
+===============================
+TONE AND STYLE
+===============================
+- Educational, concise, clear.
+- Avoid abstract or emotional language (e.g., “freedom,” “vast,” “mysterious”).
+- Focus on what can actually be drawn, animated, or labeled.
+
+===============================
+GOAL
+===============================
+Produce JSON that can be fed directly into a Manim-based scene generator to render an educational animation. 
+The output must always be clear, detailed, renderable, and visually descriptive using only Manim’s internal capabilities.
+`
+      ),
+      new HumanMessage(
+        `Generate a detailed narration and visual plan for an educational video explaining the following topic.
+
+Topic: "${job.data.userinput}"
+
+Return only JSON with two fields: "script" and "visuals". 
+Ensure the visuals match each narration line precisely and use only Manim’s internal objects and animations (no extra assets or imports).`
+      ),
+    ];
+    let scriptResult;
+    try {
+      scriptResult = await model.invoke(scriptPrompt);
+    } catch (error) {
+      console.log("error while getting scrypt from ai", error);
+    }
+    let rawScript = scriptResult.content;
+    let parsedScript = JSON.parse(rawScript.replace(/```json|```/g, "").trim());
+    const scriptLines = parsedScript.script;
+    console.log(" parsed JSON successfully!\n");
+    console.log(" narration script:\n", scriptLines);
+    console.log(" visuals here:\n", parsedScript.visuals);
+    console.log(" job done:", job.id);
     return { status: "done", processedAt: new Date().toISOString() };
   },
   { connection }
