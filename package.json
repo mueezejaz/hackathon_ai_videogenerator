@@ -18,6 +18,14 @@
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "ioredis": "^5.8.2",
+    "@elevenlabs/elevenlabs-js": "^2.12.0",
+    "@langchain/core": "^0.3.72",
+    "@langchain/google-genai": "^0.2.16",
+    "dotenv": "^17.2.1",
+    "ffprobe-static": "^3.1.0",
+    "google-tts-api": "^2.0.2",
+    "jsonrepair": "^3.13.0",
+    "langchain": "^0.3.31",
     "nodemon": "^3.1.10"
   }
 }

@@ -1,7 +1,17 @@
 import { queueName, queue, connection } from '../Queueconnection/Queue.connection.js';
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { Queue, Worker } from "bullmq";
 import redis from '../database/radis.connect.js';
+import { config } from '../config/env.js';
 
+let geminiKey = config.get("geminiKey");
+console.log(geminiKey);
+const model = new ChatGoogleGenerativeAI({
+  apiKey: geminiKey,
+  model: "gemini-2.0-flash",
+  temperature: 0.7,
+});
 async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
   userid = String(userid);
   const existingData = await redis.get(userid);
@@ -26,9 +36,9 @@ async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
 const worker = new Worker(
   queueName,
   async (job) => {
-    console.log("🎬 Processing job:", job.name);
-    await updateUser(job.data.userid, "some thing some thing");
-
+    await updateUser(job.data.userid, "waiting for ai to write script for the video", true, false, false);
+    let output = await model.invoke(job.data.userinput);
+    console.log(output);
     console.log("✅ Job done:", job.id);
     return { status: "done", processedAt: new Date().toISOString() };
   },
