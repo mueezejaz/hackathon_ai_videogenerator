@@ -16,13 +16,24 @@ app.use(express.json());
 
 app.use(express.static(path.join(__dirname, './client/dist')))
 
-app.post("/createvideo", (req, res) => {
-  console.log(req.body)
-  res.json({
-    message: "done",
-  })
+app.post("/createvideo", async (req, res) => {
+  const { input, id } = req.body;
+  console.log(input, id);
 
-})
+  const data = {
+    input,
+    message: "will start processing soon",
+    isprocessing: false,
+    isdone: false,
+    iserror: false,
+  };
+
+  await redis.set(id, JSON.stringify(data));
+  const job = queue.createJob({ id, input });
+  await job.save();
+  res.json({ status: "ok", message: "Job data stored in Redis", data });
+});
+
 app.get("/test", async (req, res) => {
   (async () => {
     const job = queue.createJob({ foo: 'this is working' });

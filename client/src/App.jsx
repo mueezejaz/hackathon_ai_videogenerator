@@ -11,7 +11,7 @@ function App() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ data: inputValue, id: 23 }),
+        body: JSON.stringify({ input: inputValue, id: 23 }),
       })
 
       const result = await response.json()
