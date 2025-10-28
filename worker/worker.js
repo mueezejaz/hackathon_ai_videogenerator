@@ -1,6 +1,12 @@
 import { queueName, queue, connection } from '../Queueconnection/Queue.connection.js';
+import path from 'path';
+import https from 'https'
+import { execSync } from "child_process";
+import ffprobe from "ffprobe-static";
+import fs from "fs";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import googleTTS from 'google-tts-api'
 import { Queue, tryCatch, Worker } from "bullmq";
 import redis from '../database/radis.connect.js';
 import { config } from '../config/env.js';
@@ -9,7 +15,7 @@ let geminiKey = config.get("geminiKey");
 console.log(geminiKey);
 const model = new ChatGoogleGenerativeAI({
   apiKey: geminiKey,
-  model: "gemini-2.0-flash",
+  model: "gemini-2.5-flash",
   temperature: 0.7,
 });
 async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
@@ -37,6 +43,20 @@ async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
 const worker = new Worker(
   queueName,
   async (job) => {
+    // generating directorys for user
+    console.log("starting to generate video", job);
+    const dirs = [
+      `userdata/${job.data.userid}/assets/audio`,
+      `userdata/${job.data.userid}/assets/video`,
+      `userdata/${job.data.userid}/manim_code`,
+      `userdata/${job.data.userid}/final`,
+      `userdata/${job.data.userid}/logs`
+    ];
+    dirs.forEach((d) => {
+      if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+    });
+
+
     // step 1 generate initial script
     console.log("generating inital script")
     await updateUser(job.data.userid, "waiting for ai to write script for the video", true, false, false);
@@ -127,10 +147,64 @@ Ensure the visuals match each narration line precisely and use only Manim’s in
     let rawScript = scriptResult.content;
     let parsedScript = JSON.parse(rawScript.replace(/```json|```/g, "").trim());
     const scriptLines = parsedScript.script;
+
+    // use full logs froms first step
     console.log(" parsed JSON successfully!\n");
     console.log(" narration script:\n", scriptLines);
     console.log(" visuals here:\n", parsedScript.visuals);
+
+
+    // step 2 converting  script form ai to voice using google tts
+    console.log("start converting script to voices")
+    const audioDurations = [];
+    const audioFiles = [];
+    for (let i = 0; i < scriptLines.length; i++) {
+      console.log("srated working")
+      const line = scriptLines[i];
+      const audioPath = `userdata/${job.data.userid}/assets/audio/line_${i + 1}.mp3`;
+
+      console.log("srated path done")
+      const url = googleTTS.getAudioUrl(line, {
+        lang: "en",
+        slow: false,
+        host: "https://translate.google.com",
+      });
+
+      console.log("srated  done")
+      const chunks = [];
+
+      await new Promise((resolve, reject) => {
+        https.get(url, (res) => {
+          if (res.statusCode !== 200) return reject(new Error(`Failed to get audio: ${res.statusCode}`));
+          res.on("data", (chunk) => chunks.push(chunk));
+          res.on("end", resolve);
+          res.on("error", reject);
+        }).on("error", reject);
+      });
+
+      const audioBuffer = Buffer.concat(chunks);
+
+      fs.writeFileSync(audioPath, audioBuffer);
+
+      console.log("write to file done")
+      try {
+        const durationOutput = execSync(`"${ffprobe.path}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`).toString();
+        const duration = parseFloat(durationOutput.trim());
+        audioDurations.push({
+          line: line,
+          visuals: parsedScript.visuals,
+          duration: duration
+        });
+        audioFiles.push(path.resolve(audioPath));
+        console.log(`saved narration ${i + 1}: ${audioPath}, Duration: ${duration.toFixed(2)}s`);
+      } catch (error) {
+        console.error(`failed to get duration for ${audioPath}:`, error.message);
+      }
+    }
+
+
     console.log(" job done:", job.id);
+
     return { status: "done", processedAt: new Date().toISOString() };
   },
   { connection }
