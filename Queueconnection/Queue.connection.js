@@ -14,4 +14,8 @@ export const connection = new IORedis({
 
 export const queueName = "videoprocessing";
 export const queue = new Queue(queueName, { connection });
-
+export async function deleteAllJobs() {
+  await queue.obliterate({ force: true });
+  console.log("✅ All jobs deleted from the queue");
+}
+deleteAllJobs();

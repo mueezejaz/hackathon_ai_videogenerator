@@ -2,3 +2,6 @@ node_modules/
 .env
 config/
 worker/userdata/
+worker/logs/
+worker/venv/
+worker/user_projects/

@@ -7,26 +7,27 @@ import fs from "fs";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import googleTTS from 'google-tts-api'
-import { Queue, tryCatch, Worker } from "bullmq";
+import { Queue, Worker } from "bullmq";
 import redis from '../database/radis.connect.js';
 import { config } from '../config/env.js';
+import { jsonrepair } from "jsonrepair";
 
 let geminiKey = config.get("geminiKey");
 console.log(geminiKey);
+
 const model = new ChatGoogleGenerativeAI({
   apiKey: geminiKey,
   model: "gemini-2.5-pro",
   temperature: 0.7,
 });
+
 async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
   userid = String(userid);
   const existingData = await redis.get(userid);
-
   if (!existingData) {
     console.log("User data not found while updating in queue");
     return;
   }
-
   console.log(existingData);
   const newData = {
     input: existingData.input,
@@ -35,25 +36,99 @@ async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
     isdone: isdone ?? existingData.isdone,
     iserror: iserror ?? existingData.iserror,
   };
-
   await redis.set(userid, newData);
   console.log("user updated");
 }
 
-async function generateAndTestManimCode(audioDurations, maxRetries = 4, job) {
+//loging Functions
+function logError(userId, attempt, error, code = null) {
+  const timestamp = new Date().toISOString();
+  const logEntry = {
+    timestamp,
+    userId,
+    attempt,
+    error: error.toString(),
+    code: code || "N/A"
+  };
+
+  const logDir = `logs/${userId}`;
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+
+  const logFile = `${logDir}/error_log_${new Date().toISOString().split('T')[0]}.json`;
+  let logs = [];
+
+  if (fs.existsSync(logFile)) {
+    try {
+      logs = JSON.parse(fs.readFileSync(logFile, 'utf-8'));
+    } catch (e) {
+      logs = [];
+    }
+  }
+
+  logs.push(logEntry);
+  fs.writeFileSync(logFile, JSON.stringify(logs, null, 2));
+
+  console.log(`error logged to ${logFile}`);
+}
+
+function logSuccess(userId, attempt, finalCode) {
+  const timestamp = new Date().toISOString();
+  const logEntry = {
+    timestamp,
+    userId,
+    attempt,
+    status: "SUCCESS",
+    finalCode
+  };
+
+  const logDir = `logs/${userId}`;
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+
+  const logFile = `${logDir}/success_log_${new Date().toISOString().split('T')[0]}.json`;
+  fs.writeFileSync(logFile, JSON.stringify(logEntry, null, 2));
+
+  console.log(`success logged to ${logFile}`);
+}
+
+// Create user-specific project folders
+function createUserDirectories(userId) {
+  const baseDir = `user_projects/${userId}`;
+  const dirs = [
+    `${baseDir}/assets/audio`,
+    `${baseDir}/assets/video`,
+    `${baseDir}/manim_code`,
+    `${baseDir}/final`,
+    `logs/${userId}`
+  ];
+
+  dirs.forEach((d) => {
+    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+  });
+
+  return baseDir;
+}
+
+//  code Generation Function with Retry Logic
+async function generateAndTestManimCode(userId, baseDir, audioDurations, maxRetries = 4) {
   let currentCode = null;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    console.log(`\n${attempt}/${maxRetries}: Generating Manim code...`);
+    console.log(`\nattempt ${attempt}/${maxRetries}: Generating Manim code`)
+    await updateUser(userId, `generating animation code (Attempt ${attempt}/${maxRetries})...`, true, false, false);
 
-    let promptMessages;
+    try {
+      let promptMessages;
 
-    if (attempt === 1) {
-      console.log("first attapt")
-      promptMessages = [
-        new SystemMessage(
-          `You are an expert Python Manim code generator. You must return ONLY valid JSON with a "code" field containing the Python code as a string.
+      if (attempt === 1) {
+        console.log("first attempt")
+        promptMessages = [
+          new SystemMessage(
+            `You are an expert Python Manim code generator. You must return ONLY valid JSON with a "code" field containing the Python code as a string.
 
 RESPONSE FORMAT:
 {
@@ -115,28 +190,28 @@ ERROR-PREVENTION CHECKLIST (MENTAL BEFORE OUTPUT):
 - No Transform() between incompatible types.
 - Do not require any user input or choice; code must run fully automatically.
 - Do not wait for user input or prompt user during execution.
-- Forced sequence: Render scenes automatically in order: Scene_1, Scene_2, Scene_3, ... Scene_N."
+- Forced sequence: Render scenes automatically in order: Scene_1, Scene_2, Scene_3, ... Scene_N.
 
 FORCED SEQUENCE:
 - Render scenes automatically in order: Scene_1, Scene_2, Scene_3, ... Scene_N.
 - Do not wait for user input or provide options.
 `
-        ),
-        new HumanMessage(
-          `Generate Manim code with animated 2D visuals (not just text). Translate each narration line into animations using circles, squares, lines, dots, arrows, etc. Do not simply write text.
+          ),
+          new HumanMessage(
+            `Generate Manim code with animated 2D visuals (not just text). Translate each narration line into animations using circles, squares, lines, dots, arrows, etc. Do not simply write text.
 
 SCENE TIMINGS:
-${audioDurations.map((item, i) => `Scene_${i + 1}: ${item.duration.toFixed(2)}s - "${item.line}" this is what should happend in each schene "${item.visuals}"`).join('\n')}
+${audioDurations.map((item, i) => `Scene_${i + 1}: ${item.duration.toFixed(2)}s - "${item.line}" this is what should happen in each scene "${item.visuals}"`).join('\n')}
 
 Return ONLY JSON: {"code": "your_python_code_here"}`
-        )
-      ];
-    } else {
-      // Retry attempt - include previous error
-      console.log("this is error that is going in ai", lastError);
-      promptMessages = [
-        new SystemMessage(
-          `You are an expert Python Manim code generator fixing a previous error. You must return ONLY valid JSON with a "code" field containing the corrected Python code.
+          )
+        ];
+      } else {
+        // Retry attempt - include previous error
+        console.log("this is error that is going in ai", lastError);
+        promptMessages = [
+          new SystemMessage(
+            `You are an expert Python Manim code generator fixing a previous error. You must return ONLY valid JSON with a "code" field containing the corrected Python code.
 
 PREVIOUS ERROR THAT OCCURRED:
 ${lastError}
@@ -160,120 +235,155 @@ RUNTIME ENVIRONMENT (IMPORTANT):
 TIMING RULES:
 - NEVER use self.wait(0). Always positive waits (e.g., self.wait(0.1), self.wait(1.5)).
 - Each scene MUST fill its exact duration with animations + waits.`
-        ),
-        new HumanMessage(
-          `Fix the previous Manim code error and generate corrected code.
+          ),
+          new HumanMessage(
+            `Fix the previous Manim code error and generate corrected code.
 
 SCENE TIMINGS:
 ${audioDurations.map((item, i) => `Scene_${i + 1}: ${item.duration.toFixed(2)}s - "${item.line}"`).join('\n')}
 
 Return ONLY JSON with corrected code: {"code": "your_corrected_python_code_here"}`
-        )
-      ];
-    }
-
-    // Generate code
-    console.log("this is prompt to generate video", promptMessages);
-    console.log("start generating code ");
-    let codeResult = await model.invoke(promptMessages);
-    let rawCode = codeResult.content;
-
-    console.log(`Raw AI Response (Attempt ${attempt}):`);
-    console.log("================");
-    console.log(rawCode.substring(0, 500) + "...");
-    console.log("================");
-
-    // Clean and parse the response
-    console.log("start cleaning code")
-    let cleanedCode = rawCode.replace(/```json|```/g, "").trim();
-
-    console.log("start cleandd code")
-    let parsedCode = JSON.parse(cleanedCode);
-    console.log("cleand")
-    console.log(parsedCode.code);
-    if (!parsedCode || typeof parsedCode.code !== 'string') {
-      throw new Error("invalid response structure. Expected JSON with 'code' field containing string.");
-    }
-
-    currentCode = parsedCode.code;
-
-    // validate that the code contains required elements
-    if (!currentCode.includes('from manim import') && !currentCode.includes('import manim')) {
-      throw new Error("Generated code doesn't contain manim import");
-    }
-
-    console.log(`code generated successfully! (Attempt ${attempt})`);
-
-    // saving  the code
-    const pythonFile = `userdata/${job.data.userid}/manim_code/animation.py`;
-
-    fs.writeFileSync(pythonFile, currentCode, "utf-8");
-    console.log("code saved at:", pythonFile);
-
-    console.log(`start running the python code`);
-
-    const tempMediaDir = `userdata/${job.data.userid}/temp_manim_output`;
-    const hostProjectPath = process.cwd();
-    console.log(hostProjectPath);
-    // running and recoring outputs 
-    const dockerCommand = `docker run --rm -v "${hostProjectPath}:/manim" manimcommunity/manim manim -pqh ${pythonFile} --media_dir ${tempMediaDir}`;
-    try {
-      const output = execSync(dockerCommand, { stdio: "pipe", encoding: 'utf-8' });
-
-      console.log("✅ Manim rendering successful!");
-      console.log("Manim output:", output);
-
-      return { success: true, code: currentCode, pythonFile, tempMediaDir };
-
-    } catch (error) {
-      console.log("this is error", error);
-      lastError = error.stderr || error.stdout || error.message;
-      console.error(` manim rendering failed attempt ${attempt}`);
-      console.error("Error output:", lastError);
-
-
-      if (attempt === maxRetries) {
-        // todo update user that code generation faild
-        console.error(` all ${maxRetries} attempts failed. Final error:`);
-        console.error(lastError);
-        throw new Error(`failed to generate working Manim code after ${maxRetries} attempts. Final error: ${lastError}`);
+          )
+        ];
       }
 
-      // Clean up failed attempt
-      if (fs.existsSync(tempMediaDir)) {
+      // generate code
+      console.log("start generating code ");
+      let codeResult = await model.invoke(promptMessages);
+      let rawCode = codeResult.content;
+
+      console.log(`Raw AI Response (Attempt ${attempt}):`);
+      console.log("================");
+      console.log(rawCode.substring(0, 500) + "...");
+      console.log("================");
+
+      // clean and parse the response
+      let cleanedCode = rawCode.replace(/```json|```/g, "").trim();
+      const jsonMatch = cleanedCode.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        cleanedCode = jsonMatch[0];
+      }
+
+      let parsedCode;
+      try {
+        parsedCode = JSON.parse(cleanedCode);
+      } catch (err) {
+        console.warn(" JSON invalid, attempting repair...");
         try {
-          fs.rmSync(tempMediaDir, { recursive: true, force: true });
-        } catch (e) {
-          console.warn("⚠️ Failed to clean up temp directory:", e.message);
+          parsedCode = JSON.parse(jsonrepair(cleanedCode));
+        } catch (repairErr) {
+          // Fallback: try to extract code if it's not in JSON format
+          if (rawCode.includes('from manim import')) {
+            console.log("🔧 Attempting to extract Python code directly...");
+            const codeMatch = rawCode.match(/```python\s*([\s\S]*?)\s*```/) ||
+              rawCode.match(/```\s*(from manim[\s\S]*?)\s*```/) ||
+              [null, rawCode];
+
+            if (codeMatch[1]) {
+              parsedCode = { code: codeMatch[1].trim() };
+            } else {
+              throw new Error("could not extract valid Python code from response");
+            }
+          } else {
+            throw new Error("no valid Python code found in response");
+          }
         }
       }
 
-      console.log(`🔄 Retrying with error feedback... (${maxRetries - attempt} attempts remaining)`);
-      continue;
+      if (!parsedCode || typeof parsedCode.code !== 'string') {
+        throw new Error("invalid response structure. Expected JSON with 'code' field containing string.");
+      }
+
+      currentCode = parsedCode.code;
+
+      // validate that the code contains required elements
+      if (!currentCode.includes('from manim import') && !currentCode.includes('import manim')) {
+        throw new Error("Generated code doesn't contain manim import");
+      }
+
+      console.log(`manim code generated successfully! (Attempt ${attempt})`);
+
+      // save the code
+      const pythonFile = `${baseDir}/manim_code/animation.py`;
+      fs.writeFileSync(pythonFile, currentCode, "utf-8");
+      console.log("manim code saved at:", pythonFile);
+
+      // Test the code by rendering it
+      console.log(`\ntesting Manim code (Attempt ${attempt})...`);
+      await updateUser(userId, `testing animation code (Attempt ${attempt}/${maxRetries})...`, true, false, false);
+
+      const tempMediaDir = `${baseDir}/temp_manim_output`;
+
+      try {
+        // apture both stdout and stderr
+        const output = execSync(
+          `manim -pqh -a ${pythonFile} --media_dir ${tempMediaDir}`,
+          {
+            stdio: "pipe",  // Capture output instead of inherit
+            encoding: 'utf-8'
+          }
+        );
+
+        console.log("manim rendering successful!");
+        console.log("manim output:", output);
+
+        // if we get here, the code worked!
+        logSuccess(userId, attempt, currentCode);
+        return { success: true, code: currentCode, pythonFile, tempMediaDir };
+
+      } catch (error) {
+        console.log("this is error", error);
+        lastError = error.stderr || error.stdout || error.message;
+        console.error(`manim rendering failed (Attempt ${attempt}):`);
+        console.error("Error output:", lastError);
+
+        // Log the error
+        logError(userId, attempt, lastError, currentCode);
+
+        // If this was our last attempt, throw the error
+        if (attempt === maxRetries) {
+          console.error(`all ${maxRetries} attempts failed. Final error:`);
+          console.error(lastError);
+          throw new Error(`Failed to generate working Manim code after ${maxRetries} attempts. Final error: ${lastError}`);
+        }
+
+        // Clean up failed attempt
+        if (fs.existsSync(tempMediaDir)) {
+          try {
+            fs.rmSync(tempMediaDir, { recursive: true, force: true });
+          } catch (e) {
+            console.warn("failed to clean up temp directory:", e.message);
+          }
+        }
+
+        console.log(`retrying with error feedback... (${maxRetries - attempt} attempts remaining)`);
+        continue;
+      }
+
+    } catch (error) {
+      lastError = error.message;
+      console.error(`code generation failed (Attempt ${attempt}):`, lastError);
+
+      logError(userId, attempt, lastError, currentCode);
+
+      if (attempt === maxRetries) {
+        throw error;
+      }
+
+      console.log(` retrying... (${maxRetries - attempt} attempts remaining)`);
     }
   }
 }
 
-const worker = new Worker(
-  queueName,
-  async (job) => {
-    // generating directorys for user
-    console.log("starting to generate video", job.data.userinput);
-    const dirs = [
-      `userdata/${job.data.userid}/assets/audio`,
-      `userdata/${job.data.userid}/assets/video`,
-      `userdata/${job.data.userid}/manim_code`,
-      `userdata/${job.data.userid}/final`,
-      `userdata/${job.data.userid}/logs`
-    ];
-    dirs.forEach((d) => {
-      if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
-    });
+// main video generation function
+async function generateVideo(userId, userInput) {
+  const baseDir = createUserDirectories(userId);
 
+  try {
+    //  Step 1: Generate initial narration script
+    console.log("step 1: Generating initial narration script...");
+    await updateUser(userId, "Generating script...", true, false, false);
 
-    // step 1 generate initial script
-    console.log("generating inital script")
-    await updateUser(job.data.userid, "waiting for ai to write script for the video", true, false, false);
     const scriptPrompt = [
       new SystemMessage(
         `You are an AI that generates detailed narration scripts and perfectly matching scene descriptions 
@@ -301,7 +411,7 @@ CONTENT RULES
    - Use a natural, documentary-style tone (not robotic or overly complex).
 
 2. Visuals:
-   - Use **only Manim’s built-in classes and functions** — no external assets, images, or extra imports.
+   - Use **only Manim's built-in classes and functions** — no external assets, images, or extra imports.
    - Allowed objects:
      - Shapes: Circle, Square, Rectangle, Line, Arrow, Dot, Polygon, Ellipse
      - Text and MathText
@@ -325,7 +435,7 @@ CONTENT RULES
 VISUAL STRUCTURE SUGGESTION
 ===============================
 - Scene 1: Introduction or definition
-- Scene 5+: Explanation of key parts or process
+- Scene 2-4: Explanation of key parts or process
 - Scene 5+: Examples, data flow, or visualization of impact
 - Final Scene: Summary or conclusion
 
@@ -333,101 +443,271 @@ VISUAL STRUCTURE SUGGESTION
 TONE AND STYLE
 ===============================
 - Educational, concise, clear.
-- Avoid abstract or emotional language (e.g., “freedom,” “vast,” “mysterious”).
+- Avoid abstract or emotional language (e.g., "freedom," "vast," "mysterious").
 - Focus on what can actually be drawn, animated, or labeled.
 
 ===============================
 GOAL
 ===============================
 Produce JSON that can be fed directly into a Manim-based scene generator to render an educational animation. 
-The output must always be clear, detailed, renderable, and visually descriptive using only Manim’s internal capabilities.
+The output must always be clear, detailed, renderable, and visually descriptive using only Manim's internal capabilities.
 `
       ),
       new HumanMessage(
         `Generate a detailed narration and visual plan for an educational video explaining the following topic.
 
-Topic: "${job.data.userinput}"
+Topic: "${userInput}"
 
 Return only JSON with two fields: "script" and "visuals". 
-Ensure the visuals match each narration line precisely and use only Manim’s internal objects and animations (no extra assets or imports).`
+Ensure the visuals match each narration line precisely and use only Manim's internal objects and animations (no extra assets or imports).`
       ),
     ];
-    console.log("this is prompt", scriptPrompt);
-    let scriptResult;
-    try {
-      scriptResult = await model.invoke(scriptPrompt);
-    } catch (error) {
-      console.log("error while getting scrypt from ai", error);
-    }
-    let rawScript = scriptResult.content;
-    let parsedScript = JSON.parse(rawScript.replace(/```json|```/g, "").trim());
-    const scriptLines = parsedScript.script;
 
-    // use full logs froms first step
-    console.log(" parsed JSON successfully!\n");
-    console.log(" narration script:\n", scriptLines);
+    let scriptResult = await model.invoke(scriptPrompt);
+    let rawScript = scriptResult.content;
+    let parsedScript;
+    try {
+      parsedScript = JSON.parse(rawScript.replace(/```json|```/g, "").trim());
+    } catch (err) {
+      console.warn(" JSON invalid, attempting repair...");
+      parsedScript = JSON.parse(jsonrepair(rawScript.replace(/```json|```/g, "").trim()));
+    }
+    const scriptLines = parsedScript.script;
+    console.log(" Parsed JSON successfully!\n");
+    console.log(" Narration Script:\n", scriptLines);
     console.log(" visuals here:\n", parsedScript.visuals);
 
+    //  Step 2: Generate narration audio files and get durations
+    console.log("\n Step 2: Generating audio and measuring durations...");
+    await updateUser(userId, "Generating audio narration...", true, false, false);
 
-    // step 2 converting  script form ai to voice using google tts
-    await updateUser(job.data.userid, "converting script to audio file", true, false, false);
-    console.log("start converting script to voices")
     const audioDurations = [];
     const audioFiles = [];
     for (let i = 0; i < scriptLines.length; i++) {
-      console.log("srated working")
       const line = scriptLines[i];
-      const audioPath = `userdata/${job.data.userid}/assets/audio/line_${i + 1}.mp3`;
+      const audioPath = `${baseDir}/assets/audio/line_${i + 1}.mp3`;
 
-      console.log("srated path done")
       const url = googleTTS.getAudioUrl(line, {
         lang: "en",
         slow: false,
         host: "https://translate.google.com",
       });
 
-      console.log("srated  done")
       const chunks = [];
 
       await new Promise((resolve, reject) => {
         https.get(url, (res) => {
-          if (res.statusCode !== 200) return reject(new Error(`Failed to get audio: ${res.statusCode}`));
           res.on("data", (chunk) => chunks.push(chunk));
           res.on("end", resolve);
           res.on("error", reject);
-        }).on("error", reject);
+        });
       });
 
       const audioBuffer = Buffer.concat(chunks);
-
       fs.writeFileSync(audioPath, audioBuffer);
 
-      console.log("write to file done")
       try {
         const durationOutput = execSync(`"${ffprobe.path}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`).toString();
         const duration = parseFloat(durationOutput.trim());
         audioDurations.push({
           line: line,
-          visuals: parsedScript.visuals,
+          visuals: parsedScript.visuals[i],
           duration: duration
         });
         audioFiles.push(path.resolve(audioPath));
-        console.log(`saved narration ${i + 1}: ${audioPath}, Duration: ${duration.toFixed(2)}s`);
+        console.log(` Saved narration ${i + 1}: ${audioPath}, Duration: ${duration.toFixed(2)}s`);
       } catch (error) {
-        console.error(`failed to get duration for ${audioPath}:`, error.message);
+        console.error(` Failed to get duration for ${audioPath}:`, error.message);
+        throw error;
       }
     }
 
-    // step 3 start generating python code
-    console.log("start generating python code");
-    await updateUser(job.data.userid, "generating python code for making video", true, false, false);
+    //  Step 3: Generate Manim code with error handling and retry logic
+    console.log("\n🎬 Step 3: Generating Manim code with error handling...");
 
-    let manimResult = await generateAndTestManimCode(audioDurations, 4, job);
-    console.log(" job done:", job.id);
+    let manimResult;
+    try {
+      manimResult = await generateAndTestManimCode(userId, baseDir, audioDurations, 4);
+    } catch (error) {
+      console.error(" Failed to generate working Manim code:", error.message);
+      throw error;
+    }
 
-    return { status: "done", processedAt: new Date().toISOString() };
+    const { pythonFile, tempMediaDir } = manimResult;
+
+    //  Step 4: Process the successful Manim videos
+    console.log("\n Step 4: Processing successful Manim videos...");
+    await updateUser(userId, "Processing video scenes...", true, false, false);
+
+    // Get the video directory
+    const videoDir = path.join(tempMediaDir, "videos/animation/1080p60");
+    if (!fs.existsSync(videoDir)) {
+      console.error(" Manim output directory not found. This shouldn't happen after successful rendering.");
+      console.log("Available directories:");
+      if (fs.existsSync(tempMediaDir)) {
+        console.log(fs.readdirSync(tempMediaDir, { recursive: true }));
+      }
+      throw new Error("Manim output directory not found");
+    }
+
+    const sceneVideoNames = fs
+      .readdirSync(videoDir)
+      .filter((f) => f.endsWith(".mp4"))
+      .sort((a, b) => {
+        const numA = parseInt(a.match(/\d+/)?.[0] || "0");
+        const numB = parseInt(b.match(/\d+/)?.[0] || "0");
+        return numA - numB;
+      });
+
+    console.log("Found scene videos:", sceneVideoNames);
+
+    if (sceneVideoNames.length === 0) {
+      console.error(" No video files found in output directory");
+      throw new Error("No video files found");
+    }
+
+    const sceneVideos = sceneVideoNames.map((f) => path.resolve(videoDir, f));
+
+    const videoList = `${baseDir}/assets/video/video_list.txt`;
+    const videoListContent = sceneVideos.map((f) => `file '${f.replace(/\\/g, '/')}'`).join("\n");
+    fs.writeFileSync(videoList, videoListContent, "utf-8");
+
+    console.log("\nMerging all Manim scenes into one video...");
+    await updateUser(userId, "Merging video scenes...", true, false, false);
+
+    try {
+      execSync(
+        `ffmpeg -y -f concat -safe 0 -i "${videoList}" -c copy ${baseDir}/assets/video/animation.mp4`,
+        { stdio: "inherit" }
+      );
+      console.log(" Video scenes merged successfully!");
+    } catch (error) {
+      console.error(" FFmpeg video merge failed:", error.message);
+      // Try alternative approach
+      console.log("Trying alternative merging approach...");
+      if (sceneVideos.length === 1) {
+        execSync(`cp "${sceneVideos[0]}" ${baseDir}/assets/video/animation.mp4`);
+      } else {
+        const inputs = sceneVideos.map((v, i) => `-i "${v}"`).join(" ");
+        const filterComplex = `"${sceneVideos.map((v, i) => `[${i}:v][${i}:a]`).join("")}concat=n=${sceneVideos.length}:v=1:a=1[outv][outa]"`;
+        execSync(
+          `ffmpeg -y ${inputs} -filter_complex ${filterComplex} -map "[outv]" -map "[outa]" ${baseDir}/assets/video/animation.mp4`,
+          { stdio: "inherit" }
+        );
+      }
+    }
+
+    //  Step 5: Merge audio + video
+    console.log("\n🎚Step 5: Merging audio and video...");
+    await updateUser(userId, "Merging audio with video...", true, false, false);
+
+    const concatList = `${baseDir}/assets/audio/list.txt`;
+    const audioListContent = audioFiles.map((f) => `file '${f.replace(/\\/g, '/')}'`).join("\n");
+    fs.writeFileSync(concatList, audioListContent, "utf-8");
+
+    // Concatenate audio into one file
+    try {
+      execSync(
+        `ffmpeg -y -f concat -safe 0 -i "${concatList}" -c copy ${baseDir}/assets/audio/final_audio.mp3`,
+        { stdio: "inherit" }
+      );
+      console.log("✅ Audio files merged successfully!");
+    } catch (error) {
+      console.error("❌ Audio merge failed:", error.message);
+      throw error;
+    }
+
+    // Merge final video and audio
+    try {
+      execSync(
+        `ffmpeg -y -i ${baseDir}/assets/video/animation.mp4 -i ${baseDir}/assets/audio/final_audio.mp3 -c:v copy -c:a aac -strict experimental -shortest ${baseDir}/final/final_video.mp4`,
+        { stdio: "inherit" }
+      );
+      console.log("final video ready:", `${baseDir}/final/final_video.mp4`);
+    } catch (error) {
+      console.error("final merge failed:", error.message);
+      throw error;
+    }
+
+    // Clean up temporary directory
+    try {
+      fs.rmSync(tempMediaDir, { recursive: true, force: true });
+      console.log("tempooorary files cleaned up");
+    } catch (error) {
+      console.warn("faile to clean up temporary files:", error.message);
+    }
+
+    console.log("\nvideo generation completed successfully!");
+    console.log("check the logs folder for detailed error/success logs.");
+
+    return {
+      success: true,
+      videoPath: `${baseDir}/final/final_video.mp4`,
+      baseDir: baseDir
+    };
+
+  } catch (error) {
+    console.error("video generation failed:", error.message);
+    throw error;
+  }
+}
+
+// worker
+const worker = new Worker(
+  queueName,
+  async (job) => {
+    const { userId, userinput } = job.data;
+    console.log(`sstarting video generation for user ${userId}: "${userinput}"`);
+
+    try {
+      // update status to processing
+      await updateUser(userId, "starting video generation...", true, false, false);
+
+      // generate the video
+      const result = await generateVideo(userId, userinput);
+
+      // update status to done
+      await updateUser(userId, "video generation completed!", false, true, false);
+
+      console.log(`job completed for user ${userId}`);
+      return result;
+
+    } catch (error) {
+      console.error(`job failed for user ${userId}:`, error.message);
+
+      // Update status to error
+      await updateUser(userId, `error: ${error.message}`, false, false, true);
+
+      throw error;
+    }
   },
-  { connection }
+  {
+    connection,
+    concurrency: 1,
+    lockDuration: 600000,
+    lockRenewTime: 30000,
+    settings: {
+      maxStalledCount: 1,
+      stalledInterval: 60000
+    }
+  }
 );
+
+// worker event handlers
+worker.on('completed', (job) => {
+  console.log(`job ${job.id} completed successfully`);
+});
+
+worker.on('failed', (job, err) => {
+  console.error(`job ${job.id} failed:`, err.message);
+});
+
+worker.on('error', (err) => {
+  console.error('worker error:', err);
+});
+
+console.log('worker started and waiting for jobs...');
+
+export { worker };
 
 

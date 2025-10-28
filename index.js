@@ -36,7 +36,7 @@ app.post("/createvideo", async (req, res) => {
   console.log("gettting");
   const existingData = await redis.get(id);
 
-  const job = await queue.add(queueName, { userid: id, userinput: input });
+  const job = await queue.add(queueName, { userId: id, userinput: input });
   console.log("job added", job);
 
   console.log(existingData);
