@@ -15,7 +15,7 @@ let geminiKey = config.get("geminiKey");
 console.log(geminiKey);
 const model = new ChatGoogleGenerativeAI({
   apiKey: geminiKey,
-  model: "gemini-2.5-flash",
+  model: "gemini-2.5-pro",
   temperature: 0.7,
 });
 async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
@@ -40,11 +40,225 @@ async function updateUser(userid, nmessage, isprocessing, isdone, iserror) {
   console.log("user updated");
 }
 
+async function generateAndTestManimCode(audioDurations, maxRetries = 4, job) {
+  let currentCode = null;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`\n${attempt}/${maxRetries}: Generating Manim code...`);
+
+    let promptMessages;
+
+    if (attempt === 1) {
+      console.log("first attapt")
+      promptMessages = [
+        new SystemMessage(
+          `You are an expert Python Manim code generator. You must return ONLY valid JSON with a "code" field containing the Python code as a string.
+
+RESPONSE FORMAT:
+{
+  "code": "from manim import *\\n\\nclass Scene_1(Scene):\\n    def construct(self):\\n        # Your code here\\n        pass"
+}
+
+RUNTIME ENVIRONMENT (IMPORTANT):
+- The code runs where ONLY Manim is installed. No TeX, no external assets, no internet, no extra Python packages.
+- DO NOT use Tex, MathTex, SVGMobject, ImageMobject, or file IO. Use basic Manim 2D mobjects and Text only (default font).
+- DO NOT import or rely on any non-Manim libraries beyond Python stdlib implicitly available via Manim.
+- All variables/constants must exist. If you define a custom color, define it explicitly at the top before use.
+
+MANDATORY SYNTAX RULES:
+1. Import: "from manim import *" at the top
+2. Only 2D objects: Circle, Square, Rectangle, Line, Dot, Arrow, Polygon, etc. (NO 3D objects)
+3. Colors: ONLY use predefined Manim color constants (BLUE, RED, GREEN, YELLOW, WHITE, BLACK, ORANGE, PURPLE, PINK, GRAY, etc.).
+   ❌ NEVER invent colors like BROWN or GRAY_B.
+   ✅ If a new color is needed, define it at the top using a HEX string, e.g. BROWN = "#8B4513".
+4. Opacity: Use .set_opacity(value) method, NOT an opacity parameter
+5. Positioning: Use .move_to([x, y, 0]) or .shift([x, y, 0])
+6. Scene names: Scene_1, Scene_2, etc. Each scene inherits from Scene
+7. Code must be syntactically valid Python and runnable by Manim as-is.
+
+
+LAYOUT / READABILITY RULES:
+- Ensure visuals are clean: DO NOT overlap or overflow. Use .scale(), .shift(), and .arrange() patterns to space elements.
+- Keep labels/tags short. Prefer small Text next to shapes; avoid long sentences.
+- If space is tight, shrink or reflow elements so nothing collides.
+
+CRITICAL TIMING RULES:
+- You are given a variable "audioDurations" (seconds) with one duration per scene.
+- NEVER use self.wait(0). Always positive waits (e.g., self.wait(0.1), self.wait(1.5)).
+- Each scene MUST fill its exact duration with animations + waits.
+- Always compute: remaining = duration - (sum of run_times used so far). If remaining ≤ 0, use self.wait(0.1); else self.wait(remaining).
+
+🚫 CAMERA USAGE RULE (IMPORTANT TO AVOID ERRORS):
+- If you need to zoom, pan, or scale the camera frame (e.g., using self.camera.frame.animate),
+  you MUST inherit from "MovingCameraScene" instead of "Scene".
+- Otherwise, never use "self.camera.frame". Use only "self.camera" for static scenes.
+- This prevents the "AttributeError: 'Camera' object has no attribute 'frame'" error.
+
+FORCED VISUALIZATION (no narration text on screen):
+- Translate meanings into animated shapes, flows, and simple labeled tags (e.g., a box labeled "Server").
+- Only show Text when absolutely necessary for labeling.
+- Make shapes that visually match the concept being shown.
+
+TIMING CALCULATION EXAMPLE:
+If Scene_3 duration is 3.5s (from audioDurations):
+- Animation 1: run_time=1.0
+- Animation 2: run_time=1.5
+- Remaining = 1.0 → self.wait(1.0)
+
+ERROR-PREVENTION CHECKLIST (MENTAL BEFORE OUTPUT):
+- No undefined names (colors, variables, objects).
+- No banned classes (Tex, MathTex, SVGMobject, ImageMobject) or external assets.
+- No self.wait(0).
+- All scenes consume their durations exactly.
+- Layout verified to avoid overlaps/overflow.
+- No Transform() between incompatible types.
+- Do not require any user input or choice; code must run fully automatically.
+- Do not wait for user input or prompt user during execution.
+- Forced sequence: Render scenes automatically in order: Scene_1, Scene_2, Scene_3, ... Scene_N."
+
+FORCED SEQUENCE:
+- Render scenes automatically in order: Scene_1, Scene_2, Scene_3, ... Scene_N.
+- Do not wait for user input or provide options.
+`
+        ),
+        new HumanMessage(
+          `Generate Manim code with animated 2D visuals (not just text). Translate each narration line into animations using circles, squares, lines, dots, arrows, etc. Do not simply write text.
+
+SCENE TIMINGS:
+${audioDurations.map((item, i) => `Scene_${i + 1}: ${item.duration.toFixed(2)}s - "${item.line}" this is what should happend in each schene "${item.visuals}"`).join('\n')}
+
+Return ONLY JSON: {"code": "your_python_code_here"}`
+        )
+      ];
+    } else {
+      // Retry attempt - include previous error
+      console.log("this is error that is going in ai", lastError);
+      promptMessages = [
+        new SystemMessage(
+          `You are an expert Python Manim code generator fixing a previous error. You must return ONLY valid JSON with a "code" field containing the corrected Python code.
+
+PREVIOUS ERROR THAT OCCURRED:
+${lastError}
+
+PREVIOUS CODE THAT FAILED:
+${currentCode}
+
+RESPONSE FORMAT:
+{
+  "code": "from manim import *\\n\\nclass Scene_1(Scene):\\n    def construct(self):\\n        # Your corrected code here\\n        pass"
+}
+
+CRITICAL FIX REQUIREMENTS:
+- Analyze the error message carefully and fix the specific issue
+
+RUNTIME ENVIRONMENT (IMPORTANT):
+- The code runs where ONLY Manim is installed. No TeX, no external assets, no internet, no extra Python packages.
+- DO NOT use Tex, MathTex, SVGMobject, ImageMobject, or file IO. Use basic Manim 2D mobjects and Text only (default font).
+- DO NOT import or rely on any non-Manim libraries beyond Python stdlib implicitly available via Manim.
+
+TIMING RULES:
+- NEVER use self.wait(0). Always positive waits (e.g., self.wait(0.1), self.wait(1.5)).
+- Each scene MUST fill its exact duration with animations + waits.`
+        ),
+        new HumanMessage(
+          `Fix the previous Manim code error and generate corrected code.
+
+SCENE TIMINGS:
+${audioDurations.map((item, i) => `Scene_${i + 1}: ${item.duration.toFixed(2)}s - "${item.line}"`).join('\n')}
+
+Return ONLY JSON with corrected code: {"code": "your_corrected_python_code_here"}`
+        )
+      ];
+    }
+
+    // Generate code
+    console.log("this is prompt to generate video", promptMessages);
+    console.log("start generating code ");
+    let codeResult = await model.invoke(promptMessages);
+    let rawCode = codeResult.content;
+
+    console.log(`Raw AI Response (Attempt ${attempt}):`);
+    console.log("================");
+    console.log(rawCode.substring(0, 500) + "...");
+    console.log("================");
+
+    // Clean and parse the response
+    console.log("start cleaning code")
+    let cleanedCode = rawCode.replace(/```json|```/g, "").trim();
+
+    console.log("start cleandd code")
+    let parsedCode = JSON.parse(cleanedCode);
+    console.log("cleand")
+    console.log(parsedCode.code);
+    if (!parsedCode || typeof parsedCode.code !== 'string') {
+      throw new Error("invalid response structure. Expected JSON with 'code' field containing string.");
+    }
+
+    currentCode = parsedCode.code;
+
+    // validate that the code contains required elements
+    if (!currentCode.includes('from manim import') && !currentCode.includes('import manim')) {
+      throw new Error("Generated code doesn't contain manim import");
+    }
+
+    console.log(`code generated successfully! (Attempt ${attempt})`);
+
+    // saving  the code
+    const pythonFile = `userdata/${job.data.userid}/manim_code/animation.py`;
+
+    fs.writeFileSync(pythonFile, currentCode, "utf-8");
+    console.log("code saved at:", pythonFile);
+
+    console.log(`start running the python code`);
+
+    const tempMediaDir = `userdata/${job.data.userid}/temp_manim_output`;
+    const hostProjectPath = process.cwd();
+    console.log(hostProjectPath);
+    // running and recoring outputs 
+    const dockerCommand = `docker run --rm -v "${hostProjectPath}:/manim" manimcommunity/manim manim -pqh ${pythonFile} --media_dir ${tempMediaDir}`;
+    try {
+      const output = execSync(dockerCommand, { stdio: "pipe", encoding: 'utf-8' });
+
+      console.log("✅ Manim rendering successful!");
+      console.log("Manim output:", output);
+
+      return { success: true, code: currentCode, pythonFile, tempMediaDir };
+
+    } catch (error) {
+      console.log("this is error", error);
+      lastError = error.stderr || error.stdout || error.message;
+      console.error(` manim rendering failed attempt ${attempt}`);
+      console.error("Error output:", lastError);
+
+
+      if (attempt === maxRetries) {
+        // todo update user that code generation faild
+        console.error(` all ${maxRetries} attempts failed. Final error:`);
+        console.error(lastError);
+        throw new Error(`failed to generate working Manim code after ${maxRetries} attempts. Final error: ${lastError}`);
+      }
+
+      // Clean up failed attempt
+      if (fs.existsSync(tempMediaDir)) {
+        try {
+          fs.rmSync(tempMediaDir, { recursive: true, force: true });
+        } catch (e) {
+          console.warn("⚠️ Failed to clean up temp directory:", e.message);
+        }
+      }
+
+      console.log(`🔄 Retrying with error feedback... (${maxRetries - attempt} attempts remaining)`);
+      continue;
+    }
+  }
+}
+
 const worker = new Worker(
   queueName,
   async (job) => {
     // generating directorys for user
-    console.log("starting to generate video", job);
+    console.log("starting to generate video", job.data.userinput);
     const dirs = [
       `userdata/${job.data.userid}/assets/audio`,
       `userdata/${job.data.userid}/assets/video`,
@@ -138,6 +352,7 @@ Return only JSON with two fields: "script" and "visuals".
 Ensure the visuals match each narration line precisely and use only Manim’s internal objects and animations (no extra assets or imports).`
       ),
     ];
+    console.log("this is prompt", scriptPrompt);
     let scriptResult;
     try {
       scriptResult = await model.invoke(scriptPrompt);
@@ -155,6 +370,7 @@ Ensure the visuals match each narration line precisely and use only Manim’s in
 
 
     // step 2 converting  script form ai to voice using google tts
+    await updateUser(job.data.userid, "converting script to audio file", true, false, false);
     console.log("start converting script to voices")
     const audioDurations = [];
     const audioFiles = [];
@@ -202,7 +418,11 @@ Ensure the visuals match each narration line precisely and use only Manim’s in
       }
     }
 
+    // step 3 start generating python code
+    console.log("start generating python code");
+    await updateUser(job.data.userid, "generating python code for making video", true, false, false);
 
+    let manimResult = await generateAndTestManimCode(audioDurations, 4, job);
     console.log(" job done:", job.id);
 
     return { status: "done", processedAt: new Date().toISOString() };
