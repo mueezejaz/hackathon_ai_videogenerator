@@ -1,10 +1,11 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import queue from "./Queueconnection/Queue.connection.js";
+//import queue from "./Queueconnection/Queue.connection.js";
 import redis from "./database/radis.connect.js"
+import { queue } from "./Queueconnection/Queue.connection.js"
 import cors from "cors";
-
+import { queueName } from "./Queueconnection/Queue.connection.js"
 const app = express();
 app.use(cors());
 const __filename = fileURLToPath(import.meta.url)
@@ -28,9 +29,18 @@ app.post("/createvideo", async (req, res) => {
     iserror: false,
   };
 
-  await redis.set(id, JSON.stringify(data));
-  const job = queue.createJob({ id, input });
-  await job.save();
+  console.log("setting");
+  await redis.set(id, data);
+  //const job = queue.createJob({ userid: id, input });
+  //await job.save();
+  console.log("gettting");
+  const existingData = await redis.get(id);
+
+  const job = await queue.add(queueName, { userid: id, userinput: data });
+  console.log("job added", job);
+
+  console.log(existingData);
+
   res.json({ status: "ok", message: "Job data stored in Redis", data });
 });
 

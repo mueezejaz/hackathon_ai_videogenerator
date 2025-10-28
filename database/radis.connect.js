@@ -14,5 +14,5 @@ try {
   console.error("faild to connect to radis database", error)
   redis = null
 }
-
+console.log("set up done ");
 export default redis
