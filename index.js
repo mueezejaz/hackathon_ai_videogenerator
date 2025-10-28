@@ -28,7 +28,34 @@ app.post("/createvideo", async (req, res) => {
     isdone: false,
     iserror: false,
   };
+  // Add this endpoint to your Express server
+  app.get("/status/:userId", async (req, res) => {
+    try {
+      console.log("calling");
+      const { userId } = req.params;
+      const data = await redis.get(userId);
 
+      if (!data) {
+        return res.status(404).json({
+          message: "No data found for this user",
+          isprocessing: false,
+          isdone: false,
+          iserror: false
+        });
+      }
+
+      res.json(data);
+      console.log("this is data", data);
+    } catch (error) {
+      console.error("Error fetching status:", error);
+      res.status(500).json({
+        message: "Server error",
+        isprocessing: false,
+        isdone: false,
+        iserror: true
+      });
+    }
+  });
   console.log("setting");
   await redis.set(id, data);
   //const job = queue.createJob({ userid: id, input });
