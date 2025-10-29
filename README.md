@@ -281,6 +281,12 @@
          │  Total time: 2-5 minutes             │
          └──────────────────────────────────────┘
 ```
+testing if i can add video or not
+<video width="600" controls>
+  <source src="https://res.cloudinary.com/dxoptpeuq/video/upload/v1761719374/hackathon_videos/tvxlbkoquersbvegyjfk.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
 ```
 
 ---
