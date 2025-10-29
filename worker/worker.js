@@ -474,7 +474,7 @@ The output must always be clear, detailed, renderable, and visually descriptive 
 
 Topic: "${userInput}"
 
-Return only JSON with two fields: "script" and "visuals". 
+Return only JSON with two fields: "script" and "visuals" each line of the scirpt should not be grater than 180 words. 
 Ensure the visuals match each narration line precisely and use only Manim's internal objects and animations (no extra assets or imports).`
       ),
     ];
@@ -503,21 +503,29 @@ Ensure the visuals match each narration line precisely and use only Manim's inte
       const line = scriptLines[i];
       const audioPath = `${baseDir}/assets/audio/line_${i + 1}.mp3`;
 
-      const url = googleTTS.getAudioUrl(line, {
-        lang: "en",
+      console.log('this is lenth of line', line.length);
+      const results = googleTTS.getAllAudioUrls(line, {
+        lang: 'en',
         slow: false,
-        host: "https://translate.google.com",
+        host: 'https://translate.google.com',
+        splitPunct: ',.?',
       });
 
       const chunks = [];
 
-      await new Promise((resolve, reject) => {
-        https.get(url, (res) => {
-          res.on("data", (chunk) => chunks.push(chunk));
-          res.on("end", resolve);
-          res.on("error", reject);
+      for (const { url } of results) {
+        await new Promise((resolve, reject) => {
+          https.get(url, (res) => {
+            const data = [];
+            res.on("data", (chunk) => data.push(chunk));
+            res.on("end", () => {
+              chunks.push(Buffer.concat(data));
+              resolve();
+            });
+            res.on("error", reject);
+          });
         });
-      });
+      }
 
       const audioBuffer = Buffer.concat(chunks);
       fs.writeFileSync(audioPath, audioBuffer);
@@ -539,13 +547,13 @@ Ensure the visuals match each narration line precisely and use only Manim's inte
     }
 
     //  Step 3: Generate Manim code with error handling and retry logic
-    console.log("\n🎬 Step 3: Generating Manim code with error handling...");
+    console.log("\nstep 3: Generating Manim code with error handling...");
 
     let manimResult;
     try {
       manimResult = await generateAndTestManimCode(userId, baseDir, audioDurations, 4);
     } catch (error) {
-      console.error(" Failed to generate working Manim code:", error.message);
+      console.error("failed to generate working Manim code:", error.message);
       throw error;
     }
 
@@ -704,7 +712,7 @@ const worker = new Worker(
   },
   {
     connection,
-    concurrency: 1,
+    concurrency: 2,
     lockDuration: 600000,
     lockRenewTime: 30000,
     settings: {
