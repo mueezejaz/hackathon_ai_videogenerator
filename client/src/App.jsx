@@ -26,7 +26,7 @@ function App() {
 
   const checkStatus = async (id) => {
     try {
-      const response = await fetch(`http://localhost:3000/status/${id}`);
+      const response = await fetch(`/status/${id}`);
       if (response.ok) {
         const data = await response.json();
         setStatus(data);
@@ -41,13 +41,18 @@ function App() {
       setError('Please enter a topic for your video');
       return;
     }
-
+    if (isLoading) {
+      return;
+    }
+    if (status?.isprocessing) {
+      return;
+    }
     setIsLoading(true);
     setError(null);
     setStatus(null);
 
     try {
-      const response = await fetch('http://localhost:3000/createvideo', {
+      const response = await fetch('createvideo', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -297,16 +302,6 @@ function App() {
         </div>
 
         {/* Footer */}
-        <footer className="relative border-t border-purple-100 bg-white bg-opacity-50 backdrop-blur-sm py-8 mt-24">
-          <div className="container mx-auto px-4 text-center">
-            <p className="text-gray-600">
-              Built with ❤️ using React, Gemini AI, Manim, and BullMQ
-            </p>
-            <p className="text-sm text-gray-500 mt-2">
-              © 2025 AI VideoGen. All rights reserved.
-            </p>
-          </div>
-        </footer>
       </div>
     );
   }
@@ -405,9 +400,9 @@ function App() {
                         'Queued'}
                 </h3>
 
-                <p className="text-gray-700 text-sm mb-3">
+                <h1 className="text-gray-700 text-sm mb-3">
                   {status.message}
-                </p>
+                </h1>
 
                 {status.isprocessing && (
                   <div className="space-y-2 mt-4">
