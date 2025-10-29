@@ -181,8 +181,6 @@ function App() {
                 Start Creating Free
                 <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
               </button>
-
-              <p className="mt-6 text-sm text-gray-500">No credit card required • 100% Free</p>
             </div>
 
             {/* Demo Video Section */}
@@ -400,7 +398,7 @@ function App() {
                         'Queued'}
                 </h3>
 
-                <h1 className="text-gray-700 text-sm mb-3">
+                <h1 className="text-gray-700 font-semibold text-lg mb-3">
                   {status.message}
                 </h1>
 
